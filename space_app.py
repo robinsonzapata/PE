@@ -5,6 +5,45 @@ from datetime import datetime, timedelta
 import io
 import xlsxwriter
 
+# ==========================================
+# 0. CONFIG & LOGIN SYSTEM
+# ==========================================
+st.set_page_config(page_title="PE Space Master Pro", layout="wide", page_icon="🏆")
+
+# --- SIMPLE CREDENTIALS CONFIGURATION ---
+# You can change these or add more users
+CREDENTIALS = {
+    "admin": "admin123",
+    "teacher": "pe2025"
+}
+
+def login_system():
+    """Handles the login UI and Session State"""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if not st.session_state.authenticated:
+        # Center the login box
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.markdown("## 🔒 PE Space Master Login")
+            st.info("Please log in to access the allocation engine.")
+            
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            
+            if st.button("Log In", type="primary"):
+                if username in CREDENTIALS and CREDENTIALS[username] == password:
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid Username or Password")
+        
+        # Stop the code here if not logged in
+        st.stop()
+
+# Run the login check before anything else
+login_system()
 
 # ==========================================
 # 1. HELPER FUNCTIONS
@@ -66,9 +105,8 @@ def check_space(class_code, date_obj, df_rules):
 
 
 # ==========================================
-# 3. UI SETUP
+# 3. UI SETUP (MAIN APP)
 # ==========================================
-st.set_page_config(page_title="PE Space Master Pro", layout="wide", page_icon="🏆")
 st.title("🏆 PE Space Master Pro")
 
 if "results_df" not in st.session_state:
@@ -77,6 +115,12 @@ df_timetable, df_rules = None, None
 
 # --- SIDEBAR ---
 with st.sidebar:
+    # Logout Button
+    if st.button("🔓 Log Out"):
+        st.session_state.authenticated = False
+        st.rerun()
+    
+    st.markdown("---")
     st.header("1. Upload Files")
     header_idx = st.number_input("Header Row:", min_value=1, value=1)
     file_tt = st.file_uploader("Timetable", type=["csv", "xlsx"])
@@ -92,7 +136,7 @@ with st.sidebar:
     end_date = st.date_input("End", datetime(2025, 12, 19))
     start_week = st.radio("Start Week", ["Week A", "Week B"])
 
-# --- MAIN APP ---
+# --- MAIN APP LOGIC ---
 if df_timetable is not None and df_rules is not None:
     # --- VALIDATION ---
     tt_missing = [c for c in ["Week", "Day", "Staff"] if c not in df_timetable.columns]
@@ -316,7 +360,7 @@ if df_timetable is not None and df_rules is not None:
                     hide_index=True,
                 )
 
-        # ================= TAB 4: TOOLS (IMPROVED) =================
+        # ================= TAB 4: TOOLS =================
         with tab_tools:
             st.subheader("🛠️ Department Tools")
 
