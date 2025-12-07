@@ -373,7 +373,8 @@ if st.session_state.results_df is not None:
     with tab_teacher:
         c1, c2, c3 = st.columns([1, 1, 2])
         with c1:
-            all_staff = sorted(df["Staff"].unique().tolist())
+            # ADD 'VIEW ALL' OPTION
+            all_staff = ["👀 VIEW ALL STAFF"] + sorted(df["Staff"].unique().tolist())
             sel_teacher = st.selectbox("Select Teacher:", all_staff)
         with c2:
             sel_week_type = st.radio(
@@ -387,77 +388,137 @@ if st.session_state.results_df is not None:
                 "View Mode:", ["🗺️ Grid View", "📄 List View"], horizontal=True
             )
 
-        # HELPER TO DRAW A GRID
+        # --- HELPER: DRAW GRID ---
         def draw_week_grid(dataframe, title):
             if dataframe.empty:
                 return
 
-            dataframe = dataframe.copy()  # Safe copy
-            dataframe["Cell"] = dataframe.apply(
-                lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
-                if x["Space"] != "TBC"
-                else f"{x['Class']}\n(TBC)",
-                axis=1,
-            )
+            # If Master View, include Teacher Name in Cell
+            is_master = sel_teacher == "👀 VIEW ALL STAFF"
+
+            dataframe = dataframe.copy()
+            if is_master:
+                dataframe["Cell"] = dataframe.apply(
+                    lambda x: f"**{x['Staff']}**: {x['Class']} ({x['Space']})"
+                    if x["Space"] != "TBC"
+                    else f"**{x['Staff']}**: {x['Class']} (TBC)",
+                    axis=1,
+                )
+            else:
+                dataframe["Cell"] = dataframe.apply(
+                    lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
+                    if x["Space"] != "TBC"
+                    else f"{x['Class']}\n(TBC)",
+                    axis=1,
+                )
 
             days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+            # Join multiple entries with a break line
             grid = dataframe.pivot_table(
                 index="Period",
                 columns="Day",
                 values="Cell",
-                aggfunc=lambda x: " / ".join(sorted(x.unique())),
+                aggfunc=lambda x: "<br>".join(sorted(x.unique())),
             )
             grid = grid.reindex(
                 columns=[d for d in days_order if d in grid.columns]
             ).sort_index()
 
             st.markdown(f"#### {title}")
-            st.dataframe(
-                grid.style.map(style_grid), use_container_width=True, height=None
+            # Use unsafe_allow_html to render breaks if needed, or just standard styling
+            st.write(grid.style.map(style_grid))
+
+        # --- HELPER: DRAW MASTER MATRIX (Staff vs Period) ---
+        def draw_master_matrix(dataframe, day_title):
+            if dataframe.empty:
+                return
+            st.markdown(f"#### 📅 {day_title}")
+
+            dataframe = dataframe.copy()
+            dataframe["Cell"] = dataframe.apply(
+                lambda x: f"{x['Class']} ({x['Space']})"
+                if x["Space"] != "TBC"
+                else f"{x['Class']} (TBC)",
+                axis=1,
             )
 
-        # MAIN VIEW LOGIC
-        if view_type == "🗺️ Grid View":
-            if "Both" in sel_week_type:
-                # STACKED VIEW
-                df_a = df[(df["Staff"] == sel_teacher) & (df["Week"] == "Week A")]
-                df_b = df[(df["Staff"] == sel_teacher) & (df["Week"] == "Week B")]
+            # Pivot: Rows=Staff, Cols=Period
+            matrix = dataframe.pivot_table(
+                index="Staff", columns="Period", values="Cell", aggfunc="first"
+            ).fillna("-")
+            st.dataframe(matrix, use_container_width=True)
 
-                if df_a.empty and df_b.empty:
-                    st.info("No classes found.")
+        # --- FILTER LOGIC ---
+        if sel_teacher == "👀 VIEW ALL STAFF":
+            d_t = df.copy()
+        else:
+            d_t = df[df["Staff"] == sel_teacher].copy()
+
+        # --- DISPLAY LOGIC ---
+        if view_type == "🗺️ Grid View":
+            if sel_teacher == "👀 VIEW ALL STAFF":
+                # SPECIAL MASTER GRID LOGIC
+                st.info(
+                    "💡 Master Grid Mode: Select a specific day to see the 'Staff Matrix'."
+                )
+
+                # Filter dropdowns for Master Grid
+                c_day_1, c_day_2 = st.columns(2)
+                with c_day_1:
+                    m_week = st.selectbox("Select Week", ["Week A", "Week B"])
+                with c_day_2:
+                    m_day = st.selectbox(
+                        "Select Day",
+                        ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+                    )
+
+                master_day_df = d_t[(d_t["Week"] == m_week) & (d_t["Day"] == m_day)]
+                if not master_day_df.empty:
+                    draw_master_matrix(master_day_df, f"{m_day} ({m_week})")
                 else:
+                    st.warning("No data for this day.")
+
+            else:
+                # INDIVIDUAL TEACHER GRID (Stacked)
+                if "Both" in sel_week_type:
+                    df_a = d_t[d_t["Week"] == "Week A"]
+                    df_b = d_t[d_t["Week"] == "Week B"]
+
                     if not df_a.empty:
                         draw_week_grid(df_a, "📅 Week A")
                     if not df_a.empty and not df_b.empty:
-                        st.markdown("---")  # Separator
+                        st.markdown("---")
                     if not df_b.empty:
                         draw_week_grid(df_b, "📅 Week B")
-
-            else:
-                # SINGLE WEEK VIEW
-                d_t = df[(df["Staff"] == sel_teacher) & (df["Week"] == sel_week_type)]
-                if d_t.empty:
-                    st.info(f"No classes for {sel_week_type}.")
+                    if df_a.empty and df_b.empty:
+                        st.info("No classes found.")
                 else:
-                    draw_week_grid(d_t, f"📅 {sel_week_type}")
+                    # Single Week
+                    d_sub = d_t[d_t["Week"] == sel_week_type]
+                    if not d_sub.empty:
+                        draw_week_grid(d_sub, f"📅 {sel_week_type}")
+                    else:
+                        st.info(f"No classes found for {sel_week_type}.")
 
         else:
-            # LIST VIEW
-            if "Both" in sel_week_type:
-                d_t = df[df["Staff"] == sel_teacher]
-            else:
-                d_t = df[(df["Staff"] == sel_teacher) & (df["Week"] == sel_week_type)]
+            # LIST VIEW (Simple)
+            if "Both" not in sel_week_type:
+                d_t = d_t[d_t["Week"] == sel_week_type]
+
+            # Sort for neatness
+            d_t = d_t.sort_values(by=["Week", "Date", "Period", "Staff"])
             st.dataframe(d_t, use_container_width=True)
 
         # DOWNLOAD
         b = io.BytesIO()
         with pd.ExcelWriter(b, engine="xlsxwriter") as w:
-            df[df["Staff"] == sel_teacher].to_excel(w, index=False)
-        st.download_button(
-            "📥 Download Full Schedule (Excel)",
-            b.getvalue(),
-            f"{sel_teacher}_Schedule.xlsx",
+            d_t.to_excel(w, index=False)
+        btn_label = (
+            "📥 Download Master List"
+            if sel_teacher == "👀 VIEW ALL STAFF"
+            else f"📥 Download {sel_teacher} Schedule"
         )
+        st.download_button(btn_label, b.getvalue(), "Schedule.xlsx")
 
     # === TAB 3: TBC ISSUES ===
     with tab_issues:
