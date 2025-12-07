@@ -11,8 +11,7 @@ import xlsxwriter
 st.set_page_config(page_title="PE Sport Allocator", layout="wide", page_icon="🏅")
 CREDENTIALS = {"admin": "admin123", "teacher": "pe2025"}
 
-# --- DEFAULT SPORT ZONES (The "Where") ---
-# This maps Activities to Default Spaces
+# Default "Sport" -> "Space" Mapping
 DEFAULT_FACILITIES = {
     "Football": "Field",
     "Rugby": "Field",
@@ -74,7 +73,6 @@ def read_file(uploaded_file, header_row):
             df = pd.read_excel(uploaded_file, header=skip, engine="openpyxl")
 
         df = clean_columns(df)
-        # Ensure critical columns are strings
         for c in ["Year", "Class", "Day", "Sport", "Activity"]:
             if c in df.columns:
                 df[c] = df[c].astype(str).str.strip()
@@ -87,11 +85,9 @@ def read_file(uploaded_file, header_row):
 def style_grid(val):
     if isinstance(val, str):
         if "TBC" in val:
-            return "background-color: #fee2e2; color: #991b1b;"
+            return "background-color: #fee2e2; color: #991b1b; border: 1px solid #fca5a5;"  # Red
         if val:
-            return (
-                "background-color: #dcfce7; color: #166534; border: 1px solid #bbf7d0;"
-            )
+            return "background-color: #dcfce7; color: #166534; border: 1px solid #bbf7d0;"  # Green/Blue
     return "color: #e5e7eb;"
 
 
@@ -100,13 +96,12 @@ def style_grid(val):
 # ==========================================
 def get_space_for_class(class_code, date_obj, df_curriculum, facility_map):
     """
-    1. Finds what SPORT the class is doing (from Curriculum File).
-    2. Finds where that SPORT is played (from Facility Map).
+    Finds Sport from Curriculum -> Maps to Space from Facility Map
     """
     curriculum = df_curriculum.to_dict("records")
     class_code = str(class_code).strip()
 
-    # 1. Parse Class (e.g. "7Hope" -> Year 7, H)
+    # 1. Parse Class
     match = re.search(
         r"^(?:Y|Year)?\s*(\d+)\s*([A-Za-z0-9]+)", class_code, re.IGNORECASE
     )
@@ -114,15 +109,12 @@ def get_space_for_class(class_code, date_obj, df_curriculum, facility_map):
         return "TBC", "Invalid Class Format"
 
     year, cls_str = match.groups()
-    specific_cls = cls_str.upper()[0]  # First letter
+    specific_cls = cls_str.upper()[0]
     day_name = date_obj.strftime("%A")
 
-    # 2. Find the SPORT from Curriculum
+    # 2. Find Sport
     found_sport = None
-
-    # Search Priority: Exact Match -> Letter Match -> All Match
     for row in curriculum:
-        # Check Date Range
         try:
             r_start = pd.to_datetime(row["Start"], dayfirst=True).date()
             r_end = pd.to_datetime(row["End"], dayfirst=True).date()
@@ -131,42 +123,34 @@ def get_space_for_class(class_code, date_obj, df_curriculum, facility_map):
         except:
             continue
 
-        # Check Year & Day
         if str(row["Year"]) != year:
             continue
         if "Day" in row and str(row["Day"]).title() not in [day_name, "All"]:
             continue
 
-        # Check Class (Exact, Letter, or All)
         r_class = str(row["Class"]).upper()
-
-        if r_class == cls_str.upper():  # Exact (e.g. 7Hope)
+        # Priority: Exact -> Letter -> All
+        if r_class == cls_str.upper():
             found_sport = row.get("Sport", row.get("Activity"))
             break
-        elif r_class == specific_cls:  # Letter (e.g. H)
+        elif r_class == specific_cls:
             found_sport = row.get("Sport", row.get("Activity"))
             break
-        elif r_class == "ALL":  # Wildcard
-            found_sport = row.get("Sport", row.get("Activity"))
-            # Keep looking in case there is a specific override later?
-            # Ideally we break on specific, but for 'All' we might want to wait.
-            # For simplicity, let's take the first 'All' if no specific found yet.
+        elif r_class == "ALL":
             if not found_sport:
                 found_sport = row.get("Sport", row.get("Activity"))
 
     if not found_sport:
-        return "TBC", f"No Sport defined for Y{year}"
+        return "TBC", f"No Sport for Y{year}"
 
-    # 3. Find the SPACE from Facility Map
-    # Fuzzy match sport name (e.g. "Year 7 Football" -> "Football")
+    # 3. Find Space
     found_sport_clean = found_sport.title()
     assigned_space = "TBC"
 
-    # Direct Lookup
     if found_sport_clean in facility_map:
         assigned_space = facility_map[found_sport_clean]
     else:
-        # Keyword Lookup (e.g. "Boys Football" contains "Football")
+        # Fuzzy search (e.g. "Boys Football" -> "Field")
         for key_sport, val_space in facility_map.items():
             if key_sport.lower() in found_sport_clean.lower():
                 assigned_space = val_space
@@ -186,12 +170,11 @@ st.title("🏅 PE Sport Allocator")
 if "results_df" not in st.session_state:
     st.session_state.results_df = None
 
-# --- SIDEBAR: FACILITIES CONFIG ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("1. Facility Manager")
-    st.info("Define where each sport is played here.")
+    st.info("Define where each sport is played.")
 
-    # Editable Dataframe for Facilities
     df_facilities_input = pd.DataFrame(
         list(DEFAULT_FACILITIES.items()), columns=["Sport", "Space"]
     )
@@ -201,9 +184,8 @@ with st.sidebar:
         use_container_width=True,
         hide_index=True,
     )
-
-    # Convert back to dict
     FACILITY_MAP = dict(zip(edited_facilities["Sport"], edited_facilities["Space"]))
+    ALL_KNOWN_SPACES = sorted(list(set(FACILITY_MAP.values())))
 
     st.markdown("---")
     st.header("2. Upload Data")
@@ -211,37 +193,35 @@ with st.sidebar:
     file_tt = st.file_uploader("Timetable (CSV/Excel)", type=["csv", "xlsx"])
     file_curr = st.file_uploader("Curriculum Plan (CSV/Excel)", type=["csv", "xlsx"])
 
-# --- MAIN APP ---
+# --- MAIN LOGIC ---
 if file_tt and file_curr:
     df_tt = read_file(file_tt, header_idx)
     df_curr = read_file(file_curr, header_idx)
 
     if df_tt is not None and df_curr is not None:
-        # Validation
+        # Validate Columns
         if "Sport" not in df_curr.columns and "Activity" not in df_curr.columns:
             st.error("❌ Curriculum File needs a 'Sport' or 'Activity' column.")
             st.stop()
 
         if st.button("🚀 Auto-Allocate by Sport", type="primary"):
             results = []
+            start_date = datetime(2025, 9, 1)  # Default academic start
+            # Generate 2 weeks of dates (Mon-Fri)
+            dates_to_run = []
+            d = start_date
+            while len(dates_to_run) < 10:
+                if d.weekday() < 5:
+                    dates_to_run.append(d)
+                d += timedelta(days=1)
 
-            # Simple Date Loop
-            start_date = datetime(2025, 9, 1)  # Default start
-            # Try to infer dates or just run a sample week
-            # For this demo, let's run a standard 2-week cycle from Sept 1st
-            dates_to_run = [
-                start_date + timedelta(days=i)
-                for i in range(14)
-                if (start_date + timedelta(days=i)).weekday() < 5
-            ]
-
-            progress_bar = st.progress(0, text="Matching Sports to Spaces...")
+            progress_bar = st.progress(0, text="Allocating Sports...")
 
             for i, curr_date in enumerate(dates_to_run):
-                week_type = "Week A" if i < 5 else "Week B"  # Simple toggle for demo
+                week_type = "Week A" if i < 5 else "Week B"
                 day_name = curr_date.strftime("%A")
+                date_str = curr_date.strftime("%Y-%m-%d")
 
-                # Filter Timetable
                 daily_tt = df_tt[
                     (df_tt["Week"].str.upper() == week_type.upper())
                     & (df_tt["Day"].str.upper() == day_name.upper())
@@ -252,74 +232,174 @@ if file_tt and file_curr:
                         col = f"Period {p}"
                         if col in row and pd.notna(row[col]):
                             cls = str(row[col]).strip()
-                            if len(cls) > 1 and cls.lower() not in ["lunch", "free"]:
-                                # === CALL THE LOGIC ===
+                            if len(cls) > 1 and cls.lower() not in [
+                                "lunch",
+                                "free",
+                                "break",
+                            ]:
                                 space, sport = get_space_for_class(
                                     cls, curr_date, df_curr, FACILITY_MAP
                                 )
-
                                 results.append(
                                     {
+                                        "Date": date_str,
                                         "Week": week_type,
                                         "Day": day_name,
-                                        "Period": f"P{p}",
+                                        "Period": f"Period {p}",
                                         "Class": cls,
-                                        "Activity": sport,  # The "What"
-                                        "Space": space,  # The "Where"
-                                        "Staff": row.get("Staff", ""),
+                                        "Activity": sport,
+                                        "Space": space,
+                                        "Staff": str(
+                                            row.get("Staff", "Unknown")
+                                        ).strip(),
                                     }
                                 )
-
-                progress_bar.progress((i + 1) / len(dates_to_run))
+                progress_bar.progress((i + 1) / 10)
 
             progress_bar.empty()
             st.session_state.results_df = pd.DataFrame(results)
             st.success("✅ Allocation Complete!")
 
-# --- DISPLAY RESULTS ---
+# --- DASHBOARD ---
 if st.session_state.results_df is not None:
-    df = st.session_state.results_df
+    df = st.session_state.results_df.copy()
+    st.markdown("---")
 
-    t1, t2, t3 = st.tabs(["📋 Main Schedule", "🤸 Sport View", "⚠️ Issues"])
+    # 4 TABS FOR CLEVER FILTERING
+    tab_teacher, tab_space, tab_activity, tab_tools = st.tabs(
+        ["👩‍🏫 Teacher View", "🏟️ Space Master", "🏃 Activity View", "🛠️ Tools"]
+    )
 
-    with t1:
-        st.subheader("Master Schedule")
-        # Filters
-        c1, c2 = st.columns(2)
+    # === TAB 1: TEACHER VIEW ===
+    with tab_teacher:
+        c1, c2, c3 = st.columns([1, 1, 2])
         with c1:
-            f_staff = st.multiselect("Filter Staff:", df["Staff"].unique())
+            all_staff = sorted(df["Staff"].unique().tolist())
+            sel_teacher = st.selectbox("Select Teacher:", all_staff)
         with c2:
-            f_day = st.multiselect("Filter Day:", df["Day"].unique())
-
-        df_show = df.copy()
-        if f_staff:
-            df_show = df_show[df_show["Staff"].isin(f_staff)]
-        if f_day:
-            df_show = df_show[df_show["Day"].isin(f_day)]
-
-        st.dataframe(df_show, use_container_width=True)
-
-    with t2:
-        st.subheader("Allocations by Sport")
-        # Pivot to show how many classes are doing what
-        pivot = df.pivot_table(
-            index="Activity", columns="Space", values="Class", aggfunc="count"
-        ).fillna(0)
-        st.dataframe(pivot, use_container_width=True)
-
-    with t3:
-        st.subheader("Unallocated Classes")
-        errs = df[df["Space"] == "TBC"]
-        if not errs.empty:
-            st.error(f"{len(errs)} Classes could not be matched.")
-            st.write(
-                "Check your Curriculum File covers these classes, AND your Facility Manager covers these sports."
+            sel_week = st.radio("Select Week:", ["Week A", "Week B"], horizontal=True)
+        with c3:
+            view_type = st.radio(
+                "View Mode:", ["🗺️ Grid View", "📄 List View"], horizontal=True
             )
-            st.dataframe(errs)
+
+        # Filter Data
+        d_t = df[(df["Staff"] == sel_teacher) & (df["Week"] == sel_week)].copy()
+
+        st.markdown(f"### 📅 Schedule: **{sel_teacher}** ({sel_week})")
+
+        if view_type == "🗺️ Grid View":
+            if not d_t.empty:
+                # Combine info for the cell
+                d_t["Cell"] = (
+                    d_t["Class"] + "\n" + d_t["Activity"] + "\n(" + d_t["Space"] + ")"
+                )
+
+                # Pivot
+                days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                grid = d_t.pivot_table(
+                    index="Period", columns="Day", values="Cell", aggfunc="first"
+                )
+
+                # Reorder days
+                grid = grid.reindex(
+                    columns=[d for d in days_order if d in grid.columns]
+                ).sort_index()
+
+                # Style
+                st.dataframe(
+                    grid.style.map(style_grid), use_container_width=True, height=500
+                )
+            else:
+                st.info("No classes found for this teacher in this week.")
         else:
-            st.success("All classes allocated successfully!")
+            st.dataframe(d_t, use_container_width=True)
+
+        # Download
+        b = io.BytesIO()
+        with pd.ExcelWriter(b, engine="xlsxwriter") as w:
+            d_t.to_excel(w, index=False)
+        st.download_button(
+            f"📥 Download Schedule", b.getvalue(), f"{sel_teacher}_Schedule.xlsx"
+        )
+
+    # === TAB 2: SPACE MASTER ===
+    with tab_space:
+        w_sel = st.selectbox(
+            "Select Week Scope", ["Week A", "Week B"], key="space_week"
+        )
+        df_heat = df[df["Week"] == w_sel]
+
+        if not df_heat.empty:
+            # Matrix: Space vs Period (Count of Classes)
+            mat = (
+                df_heat.pivot_table(
+                    index="Space", columns="Period", values="Class", aggfunc="count"
+                )
+                .fillna(0)
+                .astype(int)
+            )
+            st.subheader(f"🔥 Space Utilization ({w_sel})")
+            st.dataframe(mat, use_container_width=True)
+        else:
+            st.info("No data.")
+
+    # === TAB 3: ACTIVITY VIEW ===
+    with tab_activity:
+        st.info("See how many classes are doing each sport.")
+        act_counts = df["Activity"].value_counts().reset_index()
+        act_counts.columns = ["Sport/Activity", "Sessions"]
+        st.bar_chart(act_counts.set_index("Sport/Activity"))
+
+    # === TAB 4: TOOLS ===
+    with tab_tools:
+        st.subheader("🛠️ Department Tools")
+        t1, t2 = st.tabs(["🕵️ Free Space Finder", "🚩 Conflict Report"])
+
+        # Tool A: Free Space Finder
+        with t1:
+            c_day, c_per, c_wk = st.columns(3)
+            with c_day:
+                f_day = st.selectbox(
+                    "Day", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                )
+            with c_per:
+                f_per = st.selectbox(
+                    "Period",
+                    ["Period 1", "Period 2", "Period 3", "Period 4", "Period 5"],
+                )
+            with c_wk:
+                f_wk = st.selectbox("Week", ["Week A", "Week B"])
+
+            if st.button("🔍 Find Free Spaces"):
+                used = df[
+                    (df["Week"] == f_wk)
+                    & (df["Day"] == f_day)
+                    & (df["Period"] == f_per)
+                ]["Space"].unique()
+
+                free = set(ALL_KNOWN_SPACES) - set(used)
+
+                if free:
+                    st.success(f"✅ {len(free)} Spaces Available!")
+                    st.write(sorted(list(free)))
+                else:
+                    st.error("❌ No spaces available.")
+
+        # Tool B: Conflict Report
+        with t2:
+            st.info("Detects if multiple classes are booked into the same space.")
+            # Duplicate check on Date, Period, Space
+            dupes = df[df.duplicated(subset=["Date", "Period", "Space"], keep=False)]
+            dupes = dupes[(dupes["Space"] != "TBC") & (dupes["Space"] != "nan")]
+
+            if not dupes.empty:
+                st.error(f"⚠️ {len(dupes)} Conflicts Detected!")
+                st.dataframe(dupes.sort_values(by=["Date", "Period"]))
+            else:
+                st.success("✅ No conflicts found. Good job!")
 
 else:
     st.info(
-        "👈 Please define your facilities in the sidebar, then upload your Timetable and Curriculum."
+        "👈 Please upload your Timetable and Curriculum files in the sidebar to begin."
     )
