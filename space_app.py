@@ -107,6 +107,8 @@ def style_grid(val):
             return (
                 "background-color: #dcfce7; color: #166534; border: 1px solid #bbf7d0;"
             )
+        if "Free" in val:
+            return "color: #9ca3af; font-style: italic;"
     return "color: #e5e7eb;"
 
 
@@ -374,8 +376,9 @@ if st.session_state.results_df is not None:
         c1, c2, c3 = st.columns([1, 1, 2])
         with c1:
             # ADD 'VIEW ALL' OPTION
-            all_staff = ["👀 VIEW ALL STAFF"] + sorted(df["Staff"].unique().tolist())
-            sel_teacher = st.selectbox("Select Teacher:", all_staff)
+            all_staff_glob = sorted(df["Staff"].unique().tolist())
+            all_staff_opts = ["👀 VIEW ALL STAFF"] + all_staff_glob
+            sel_teacher = st.selectbox("Select Teacher:", all_staff_opts)
 
         # Only show week options if NOT viewing all staff
         if sel_teacher != "👀 VIEW ALL STAFF":
@@ -429,13 +432,10 @@ if st.session_state.results_df is not None:
             st.dataframe(grid.style.map(style_grid), use_container_width=True)
 
         # --- HELPER: DRAW MASTER MATRIX (ALL STAFF) ---
-        def draw_master_matrix(dataframe, title):
-            if dataframe.empty:
-                return
+        def draw_master_matrix(dataframe, title, all_staff_list):
             st.markdown(f"#### 📅 Master Schedule: {title}")
 
             dataframe = dataframe.copy()
-            # Concise Cell Format for Master View
             dataframe["Cell"] = dataframe.apply(
                 lambda x: f"{x['Class']} ({x['Space']})"
                 if x["Space"] != "TBC"
@@ -443,17 +443,30 @@ if st.session_state.results_df is not None:
                 axis=1,
             )
 
-            # Pivot: Rows=Staff, Cols=Periods
-            # We filter out rows where Staff is 'Unknown' if desired
+            # Pivot
             grid = dataframe.pivot_table(
                 index="Staff", columns="Period", values="Cell", aggfunc="first"
-            ).fillna("")
+            )
 
-            # Sort Periods correctly
-            cols = sorted(grid.columns.tolist())
-            grid = grid[cols]
+            # REINDEX TO INCLUDE ALL STAFF (Even if free)
+            grid = grid.reindex(all_staff_list)
+            grid = grid.fillna("Free")  # Fill blanks with "Free"
 
-            st.dataframe(grid, use_container_width=True, height=600)
+            # Ensure all periods exist
+            all_periods = ["Period 1", "Period 2", "Period 3", "Period 4", "Period 5"]
+            grid = grid.reindex(
+                columns=[
+                    p for p in all_periods if p in grid.columns or p in all_periods
+                ],
+                fill_value="Free",
+            )
+
+            # Sort columns
+            grid = grid[sorted(grid.columns)]
+
+            st.dataframe(
+                grid.style.map(style_grid), use_container_width=True, height=600
+            )
 
         # --- DISPLAY LOGIC ---
 
@@ -474,14 +487,12 @@ if st.session_state.results_df is not None:
                         ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
                     )
 
-                master_df = df[
-                    (df["Week"] == m_week) & (df["Day"] == m_day)
-                ].sort_values("Staff")
+                # Filter data for that day
+                master_day_df = df[(df["Week"] == m_week) & (df["Day"] == m_day)]
 
-                if not master_df.empty:
-                    draw_master_matrix(master_df, f"{m_day} ({m_week})")
-                else:
-                    st.warning("No classes found for this day.")
+                # Draw Matrix passing ALL staff so missing ones appear as "Free"
+                draw_master_matrix(master_day_df, f"{m_day} ({m_week})", all_staff_glob)
+
             else:
                 # List View for All
                 st.dataframe(
@@ -499,15 +510,10 @@ if st.session_state.results_df is not None:
                     df_a = d_t[d_t["Week"] == "Week A"]
                     df_b = d_t[d_t["Week"] == "Week B"]
 
-                    if not df_a.empty:
-                        draw_week_grid(df_a, "📅 Week A")
+                    draw_week_grid(df_a, "📅 Week A")
                     if not df_a.empty and not df_b.empty:
                         st.markdown("---")
-                    if not df_b.empty:
-                        draw_week_grid(df_b, "📅 Week B")
-
-                    if df_a.empty and df_b.empty:
-                        st.info("No classes found.")
+                    draw_week_grid(df_b, "📅 Week B")
                 else:
                     # SINGLE WEEK VIEW
                     d_sub = d_t[d_t["Week"] == sel_week_type]
