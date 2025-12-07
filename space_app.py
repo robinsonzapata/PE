@@ -8,14 +8,12 @@ import xlsxwriter
 # ==========================================
 # 0. CONFIG & LOGIN SYSTEM
 # ==========================================
+# This must be the first Streamlit command!
 st.set_page_config(page_title="PE Space Master Pro", layout="wide", page_icon="🏆")
 
 # --- SIMPLE CREDENTIALS CONFIGURATION ---
-# You can change these or add more users
-CREDENTIALS = {
-    "admin": "admin123",
-    "teacher": "pe2025"
-}
+CREDENTIALS = {"admin": "admin123", "teacher": "pe2025"}
+
 
 def login_system():
     """Handles the login UI and Session State"""
@@ -23,27 +21,30 @@ def login_system():
         st.session_state.authenticated = False
 
     if not st.session_state.authenticated:
-        # Center the login box
+        # Center the login box using columns
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown("## 🔒 PE Space Master Login")
             st.info("Please log in to access the allocation engine.")
-            
+
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
-            
+
             if st.button("Log In", type="primary"):
                 if username in CREDENTIALS and CREDENTIALS[username] == password:
                     st.session_state.authenticated = True
                     st.rerun()
                 else:
                     st.error("❌ Invalid Username or Password")
-        
-        # Stop the code here if not logged in
+
+        # Stop the code execution here if not logged in
         st.stop()
 
-# Run the login check before anything else
+
+# --- RUN LOGIN CHECK ---
+# This runs immediately. If not logged in, the script stops here.
 login_system()
+
 
 # ==========================================
 # 1. HELPER FUNCTIONS
@@ -107,6 +108,7 @@ def check_space(class_code, date_obj, df_rules):
 # ==========================================
 # 3. UI SETUP (MAIN APP)
 # ==========================================
+# Everything below this line only runs if the user is logged in
 st.title("🏆 PE Space Master Pro")
 
 if "results_df" not in st.session_state:
@@ -119,7 +121,7 @@ with st.sidebar:
     if st.button("🔓 Log Out"):
         st.session_state.authenticated = False
         st.rerun()
-    
+
     st.markdown("---")
     st.header("1. Upload Files")
     header_idx = st.number_input("Header Row:", min_value=1, value=1)
