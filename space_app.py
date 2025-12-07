@@ -31,8 +31,8 @@ DEFAULT_FACILITIES = {
     "Theory": "Classroom 1",
     "Dance": "Studio",
     "Table Tennis": "Gym",
-    "Pe": "Field",  # Fallback
-    "Gcse Pe": "Classroom 1",  # Fallback
+    "Pe": "Field",
+    "Gcse Pe": "Classroom 1",
 }
 
 
@@ -219,23 +219,24 @@ if "run_complete" not in st.session_state:
 with st.sidebar:
     st.header("🎮 Controls")
 
-    # 1. Date Selection
+    st.markdown("### 1. Scope (Which Weeks?)")
+    run_scope = st.radio(
+        "Generate:",
+        ["Both Weeks (A & B)", "Week A Only", "Week B Only"],
+        help="Select 'Both Weeks' to see the full cycle.",
+    )
+
+    st.markdown("### 2. Timeline")
     start_date = st.date_input("Start Date (Monday)", date(2025, 9, 1))
 
-    # 2. Scope / Duration Selection (NEW)
-    st.markdown("### ⏱️ Duration")
-    duration_mode = st.radio("Generate for:", ["Custom Weeks", "Standard 2-Week Cycle"])
+    # Logic: If 'Both Weeks' is selected, we usually want at least 2 weeks.
+    # If custom duration is needed (e.g. whole term), user can slide.
 
-    if duration_mode == "Custom Weeks":
-        num_weeks = st.slider(
-            "Number of Weeks to Generate",
-            min_value=1,
-            max_value=12,
-            value=8,
-            help="Useful for generating a whole Half-Term schedule (e.g., 6-8 weeks).",
-        )
+    duration_mode = st.checkbox("Generate Full Term (Multi-week)", value=False)
+    if duration_mode:
+        num_weeks = st.slider("Weeks to Generate", 2, 12, 8)
     else:
-        num_weeks = 2
+        num_weeks = 2  # Default cycle
 
     debug_mode = st.checkbox("🐞 Debug Mode", value=False)
 
@@ -290,13 +291,11 @@ if run_btn:
             results = []
             curriculum_records = df_curr.to_dict("records")
 
-            # --- DATE GENERATION LOGIC ---
             dates_to_run = []
             d = start_date
 
-            # Calculate total school days needed (5 days per week)
+            # 1. GENERATE DATES
             total_days_needed = num_weeks * 5
-
             while len(dates_to_run) < total_days_needed:
                 if d.weekday() < 5:
                     dates_to_run.append(d)
@@ -304,21 +303,27 @@ if run_btn:
 
             progress_bar = st.progress(0, text="Allocating Sports...")
 
+            # 2. ITERATE
             for i, curr_date in enumerate(dates_to_run):
-                # WEEK A / B LOGIC
-                # Assuming simple alternation starting from the user's start date
-                # You might want to adjust logic if Start Date isn't Week A
+                # --- WEEK A/B CALCULATION ---
+                # Logic: Week flips every 5 school days
+                current_week_idx = i // 5
+                is_even_week = current_week_idx % 2 == 0
+                # Assuming Start Date is Week A.
+                # If Start Date is Week B, swap this logic.
+                week_type_calc = "Week A" if is_even_week else "Week B"
 
-                # Logic: Every 5 days, the week type flips.
-                # (i // 5) gives 0 for first week, 1 for second week, etc.
-                is_even_week = (i // 5) % 2 == 0
-                week_type = "Week A" if is_even_week else "Week B"
+                # --- FILTER BY SCOPE ---
+                if run_scope == "Week A Only" and week_type_calc == "Week B":
+                    continue  # Skip this day
+                if run_scope == "Week B Only" and week_type_calc == "Week A":
+                    continue  # Skip this day
 
                 day_name = curr_date.strftime("%A")
                 date_str = curr_date.strftime("%Y-%m-%d")
 
                 daily_tt = df_tt[
-                    (df_tt["Week"].str.upper() == week_type.upper())
+                    (df_tt["Week"].str.upper() == week_type_calc.upper())
                     & (df_tt["Day"].str.upper() == day_name.upper())
                 ]
 
@@ -333,6 +338,7 @@ if run_btn:
                                 "break",
                                 "nan",
                             ]:
+                                # --- TERM ROTATION LOOKUP ---
                                 space, sport, reason = get_space_for_class(
                                     cls,
                                     curr_date,
@@ -343,7 +349,7 @@ if run_btn:
                                 results.append(
                                     {
                                         "Date": date_str,
-                                        "Week": week_type,
+                                        "Week": week_type_calc,
                                         "Day": day_name,
                                         "Period": f"Period {p}",
                                         "Class": cls,
@@ -356,7 +362,6 @@ if run_btn:
                                     }
                                 )
 
-                # Update progress
                 progress_bar.progress((i + 1) / total_days_needed)
 
             progress_bar.empty()
@@ -384,8 +389,7 @@ if st.session_state.results_df is not None:
             all_staff = sorted(df["Staff"].unique().tolist())
             sel_teacher = st.selectbox("Select Teacher:", all_staff)
         with c2:
-            # Dropdown for Week Selection (Since we might have 8 weeks now)
-            # Create a nice label like "Week 1 (Week A)", "Week 2 (Week B)"
+            # Smart Week Selector
             df["Week_Label"] = (
                 df["Date"].apply(lambda x: pd.to_datetime(x).strftime("%b %d"))
                 + " ("
@@ -394,16 +398,18 @@ if st.session_state.results_df is not None:
             )
             available_weeks = sorted(df["Week_Label"].unique().tolist())
 
-            sel_week_label = st.selectbox("Select Week Scope:", available_weeks)
+            if len(available_weeks) > 1:
+                sel_week_label = st.selectbox("Select Week Scope:", available_weeks)
+                d_t = df[
+                    (df["Staff"] == sel_teacher) & (df["Week_Label"] == sel_week_label)
+                ].copy()
+            else:
+                d_t = df[df["Staff"] == sel_teacher].copy()
 
         with c3:
             view_type = st.radio(
                 "View Mode:", ["🗺️ Grid View", "📄 List View"], horizontal=True
             )
-
-        d_t = df[
-            (df["Staff"] == sel_teacher) & (df["Week_Label"] == sel_week_label)
-        ].copy()
 
         if view_type == "🗺️ Grid View":
             if not d_t.empty:
@@ -431,23 +437,17 @@ if st.session_state.results_df is not None:
         else:
             st.dataframe(d_t, use_container_width=True)
 
-        # Download Button (Full Term or Selected Week?)
-        # Let's download the FULL term for that teacher
-        d_full = df[df["Staff"] == sel_teacher].copy()
         b = io.BytesIO()
         with pd.ExcelWriter(b, engine="xlsxwriter") as w:
-            d_full.to_excel(w, index=False)
+            d_t.to_excel(w, index=False)
         st.download_button(
-            "📥 Download Full Term Schedule",
-            b.getvalue(),
-            f"{sel_teacher}_Term_Schedule.xlsx",
+            "📥 Download Schedule", b.getvalue(), f"{sel_teacher}_Schedule.xlsx"
         )
 
     # === TAB 3: TBC ISSUES ===
     with tab_issues:
         st.subheader("🚨 Why are classes TBC?")
         tbc_df = df[df["Space"] == "TBC"]
-
         if not tbc_df.empty:
             st.error(f"Found {len(tbc_df)} unallocated classes.")
             reasons = tbc_df["Reason"].value_counts().reset_index()
