@@ -378,9 +378,9 @@ if st.session_state.results_df is not None:
         with c2:
             sel_week_type = st.radio(
                 "Select View:",
-                ["Week A", "Week B", "Both (Side-by-Side)"],
+                ["Both Weeks (Full Cycle)", "Week A", "Week B"],
                 horizontal=True,
-                index=2,
+                index=0,
             )
 
         with c3:
@@ -388,7 +388,7 @@ if st.session_state.results_df is not None:
                 "View Mode:", ["🗺️ Grid View", "📄 List View"], horizontal=True
             )
 
-        # Filtering Logic
+        # Filtering
         if "Both" in sel_week_type:
             d_t = df[df["Staff"] == sel_teacher].copy()
         else:
@@ -405,13 +405,12 @@ if st.session_state.results_df is not None:
                     axis=1,
                 )
 
-                # --- NEW: SPLIT VIEW LOGIC ---
+                # --- NEW LOGIC: 10-Day Panoramic View ---
                 if "Both" in sel_week_type:
-                    # Create a composite column key: "Monday (Week A)", "Monday (Week B)"
-                    # We strip "Week " to just "A" or "B" for neatness: "Monday (A)"
-                    d_t["Split_Col"] = (
-                        d_t["Day"] + " (" + d_t["Week"].str.replace("Week ", "") + ")"
-                    )
+                    # Clean Week Key: "A" or "B"
+                    d_t["Week_Short"] = d_t["Week"].str.replace("Week ", "")
+                    # Create Column: "Monday (A)"
+                    d_t["Split_Col"] = d_t["Day"] + " (" + d_t["Week_Short"] + ")"
 
                     grid = d_t.pivot_table(
                         index="Period",
@@ -420,17 +419,23 @@ if st.session_state.results_df is not None:
                         aggfunc=lambda x: " / ".join(sorted(x.unique())),
                     )
 
-                    # Custom Sort Order: Mon (A), Mon (B), Tue (A), Tue (B)...
+                    # Force Specific Order: Mon A -> Fri A -> Mon B -> Fri B
                     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-                    weeks = ["A", "B"]
-                    sorted_cols = [f"{d} ({w})" for d in days for w in weeks]
+                    ordered_cols = []
 
-                    # Only keep columns that actually exist in the data
-                    final_cols = [c for c in sorted_cols if c in grid.columns]
+                    # Add Week A columns first
+                    for d in days:
+                        ordered_cols.append(f"{d} (A)")
+                    # Add Week B columns next
+                    for d in days:
+                        ordered_cols.append(f"{d} (B)")
+
+                    # Filter to columns that actually exist
+                    final_cols = [c for c in ordered_cols if c in grid.columns]
                     grid = grid.reindex(columns=final_cols).sort_index()
 
                 else:
-                    # Standard View for Single Week
+                    # Single Week View
                     days_order = [
                         "Monday",
                         "Tuesday",
