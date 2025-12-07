@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date  # Added 'date' to imports
 import io
 import xlsxwriter
 
@@ -88,7 +88,7 @@ def read_file(uploaded_file, header_row):
         if "Year" in df.columns:
             df["Year"] = df["Year"].apply(clean_year_column)
 
-        # Clean text columns
+        # Clean text columns to ensure they are strings
         for c in ["Class", "Day", "Sport", "Activity", "Start", "End"]:
             if c in df.columns:
                 df[c] = df[c].astype(str).str.strip()
@@ -112,7 +112,7 @@ def style_grid(val):
 
 
 # ==========================================
-# 2. LOGIC ENGINE (With Debugger)
+# 2. LOGIC ENGINE (FIXED DATE CHECK)
 # ==========================================
 def get_space_for_class(
     class_code, date_obj, curriculum_records, facility_map, debug_mode=False
@@ -132,38 +132,48 @@ def get_space_for_class(
     found_sport = None
     rule_matched_type = None
 
-    # DEBUG LOGGING
     reasons = []
 
     for row in curriculum_records:
         # 1. Year Check
         if str(row["Year"]) != year:
-            continue  # Silent skip for wrong years to reduce noise
+            continue
 
-        # 2. Day Check (If exists)
+        # 2. Day Check
         if "Day" in row and str(row["Day"]).title() not in [
             day_name,
             "All",
             "Nan",
             "None",
+            "",
         ]:
-            if debug_mode:
-                reasons.append(f"Day Mismatch: Rule {row.get('Day')} != {day_name}")
+            # Only log if debugging is strictly needed, usually noise
             continue
 
-        # 3. Date Check
+        # 3. Date Check (CRASH FIXED HERE)
         try:
-            # Force string to avoid object issues
             s_str = str(row["Start"])
             e_str = str(row["End"])
-            r_start = pd.to_datetime(s_str, dayfirst=True).date()
-            r_end = pd.to_datetime(e_str, dayfirst=True).date()
 
-            if not (r_start <= date_obj.date() <= r_end):
+            # Robust parsing (handles errors gracefully)
+            ts_start = pd.to_datetime(s_str, dayfirst=True, errors="coerce")
+            ts_end = pd.to_datetime(e_str, dayfirst=True, errors="coerce")
+
+            if pd.isna(ts_start) or pd.isna(ts_end):
                 if debug_mode:
-                    reasons.append(
-                        f"Date Mismatch: {date_obj.date()} not in {r_start}-{r_end}"
-                    )
+                    reasons.append(f"Invalid Date in Rule: {s_str}-{e_str}")
+                continue
+
+            r_start = ts_start.date()
+            r_end = ts_end.date()
+
+            # FIX: Check if date_obj is 'datetime' (has .date()) or just 'date' (is .date())
+            current_d = date_obj
+            if isinstance(date_obj, datetime):
+                current_d = date_obj.date()
+
+            if not (r_start <= current_d <= r_end):
+                # Valid date, just not in range. Skip silently.
                 continue
         except Exception as e:
             if debug_mode:
@@ -182,14 +192,11 @@ def get_space_for_class(
         elif r_class == "ALL" and not found_sport:
             found_sport = row.get("Sport", row.get("Activity"))
             rule_matched_type = "All"
-        else:
-            if debug_mode:
-                reasons.append(f"Class Mismatch: {r_class} != {cls_str}")
 
     if not found_sport:
         debug_msg = f"No Rule found for Y{year}"
         if debug_mode and reasons:
-            debug_msg += f" | Debug: {'; '.join(reasons[:3])}..."
+            debug_msg += f" | Debug: {'; '.join(reasons[:2])}..."
         return "TBC", "None", debug_msg
 
     # 5. Facility Map
@@ -223,8 +230,8 @@ if "run_complete" not in st.session_state:
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("🎮 Controls")
-    start_date = st.date_input("Start Date", datetime(2025, 9, 1))
-    debug_mode = st.checkbox("🐞 Debug Mode (Show Errors)", value=False)
+    start_date = st.date_input("Start Date", date(2025, 9, 1))  # Explicitly using date
+    debug_mode = st.checkbox("🐞 Debug Mode", value=False)
     st.markdown("---")
     run_btn = st.button("🚀 Run Allocation", type="primary", use_container_width=True)
     if st.button("🔓 Log Out"):
@@ -262,6 +269,7 @@ with st.expander("⚙️ Setup & Configuration", expanded=expander_state):
             height=300,
         )
         FACILITY_MAP = dict(zip(edited_facilities["Sport"], edited_facilities["Space"]))
+        ALL_KNOWN_SPACES = sorted(list(set(FACILITY_MAP.values())))
 
 # ==========================================
 # 4. EXECUTION
@@ -275,7 +283,7 @@ if run_btn:
             results = []
             curriculum_records = df_curr.to_dict("records")
             dates_to_run = []
-            d = start_date
+            d = start_date  # This is a date object
             while len(dates_to_run) < 10:
                 if d.weekday() < 5:
                     dates_to_run.append(d)
@@ -336,21 +344,78 @@ if run_btn:
         st.error("⚠️ Please upload files first.")
 
 # ==========================================
-# 5. DASHBOARD (Simplified for Output)
+# 5. DASHBOARD
 # ==========================================
 if st.session_state.results_df is not None:
     df = st.session_state.results_df.copy()
 
-    # TBC Highlight Logic
-    def tbc_color(val):
-        return "background-color: #fee2e2" if val == "TBC" else ""
+    st.markdown("## 📊 Allocation Dashboard")
+    tab_teacher, tab_space, tab_issues, tab_tools = st.tabs(
+        ["👩‍🏫 Teacher View", "🏟️ Space Master", "⚠️ TBC Issues", "🛠️ Tools"]
+    )
 
-    st.markdown("### 🔍 Results")
-    st.dataframe(df.style.map(tbc_color, subset=["Space"]), use_container_width=True)
+    # === TAB 1: TEACHER VIEW ===
+    with tab_teacher:
+        c1, c2, c3 = st.columns([1, 1, 2])
+        with c1:
+            all_staff = sorted(df["Staff"].unique().tolist())
+            sel_teacher = st.selectbox("Select Teacher:", all_staff)
+        with c2:
+            sel_week = st.radio("Select Week:", ["Week A", "Week B"], horizontal=True)
+        with c3:
+            view_type = st.radio(
+                "View Mode:", ["🗺️ Grid View", "📄 List View"], horizontal=True
+            )
 
-    # TBC Inspector
-    tbc_only = df[df["Space"] == "TBC"]
-    if not tbc_only.empty:
-        st.error(f"⚠️ {len(tbc_only)} TBCs Found")
-        st.markdown("**Why? Check the 'Reason' column below:**")
-        st.dataframe(tbc_only[["Class", "Date", "Reason"]].head(10))
+        d_t = df[(df["Staff"] == sel_teacher) & (df["Week"] == sel_week)].copy()
+
+        if view_type == "🗺️ Grid View":
+            if not d_t.empty:
+                d_t["Cell"] = d_t.apply(
+                    lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
+                    if x["Space"] != "TBC"
+                    else f"{x['Class']}\n(TBC)",
+                    axis=1,
+                )
+                days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                grid = d_t.pivot_table(
+                    index="Period",
+                    columns="Day",
+                    values="Cell",
+                    aggfunc=lambda x: " / ".join(x.unique()),
+                )
+                grid = grid.reindex(
+                    columns=[d for d in days_order if d in grid.columns]
+                ).sort_index()
+                st.dataframe(
+                    grid.style.map(style_grid), use_container_width=True, height=500
+                )
+            else:
+                st.info("No classes found.")
+        else:
+            st.dataframe(d_t, use_container_width=True)
+
+        b = io.BytesIO()
+        with pd.ExcelWriter(b, engine="xlsxwriter") as w:
+            d_t.to_excel(w, index=False)
+        st.download_button(
+            "📥 Download Schedule", b.getvalue(), f"{sel_teacher}_Schedule.xlsx"
+        )
+
+    # === TAB 3: TBC ISSUES ===
+    with tab_issues:
+        st.subheader("🚨 Why are classes TBC?")
+        tbc_df = df[df["Space"] == "TBC"]
+
+        if not tbc_df.empty:
+            st.error(f"Found {len(tbc_df)} unallocated classes.")
+            reasons = tbc_df["Reason"].value_counts().reset_index()
+            reasons.columns = ["Reason for Error", "Count"]
+            st.dataframe(reasons, use_container_width=True)
+            st.dataframe(
+                tbc_df[["Week", "Day", "Period", "Class", "Activity", "Reason"]].head(
+                    20
+                )
+            )
+        else:
+            st.success("✅ Perfection! All classes have been allocated a space.")
