@@ -376,9 +376,11 @@ if st.session_state.results_df is not None:
             all_staff = sorted(df["Staff"].unique().tolist())
             sel_teacher = st.selectbox("Select Teacher:", all_staff)
         with c2:
-            # === UPDATED: Added 'Both' Option ===
             sel_week_type = st.radio(
-                "Select Week:", ["Week A", "Week B", "Both"], horizontal=True
+                "Select View:",
+                ["Week A", "Week B", "Both (Side-by-Side)"],
+                horizontal=True,
+                index=2,
             )
 
         with c3:
@@ -386,8 +388,8 @@ if st.session_state.results_df is not None:
                 "View Mode:", ["🗺️ Grid View", "📄 List View"], horizontal=True
             )
 
-        # Filter Logic
-        if sel_week_type == "Both":
+        # Filtering Logic
+        if "Both" in sel_week_type:
             d_t = df[df["Staff"] == sel_teacher].copy()
         else:
             d_t = df[
@@ -396,34 +398,56 @@ if st.session_state.results_df is not None:
 
         if view_type == "🗺️ Grid View":
             if not d_t.empty:
-                # Add Week label to cell text ONLY if "Both" is selected to avoid confusion
-                if sel_week_type == "Both":
-                    d_t["Cell"] = d_t.apply(
-                        lambda x: f"[{x['Week']}] {x['Class']}\n{x['Activity']}\n({x['Space']})"
-                        if x["Space"] != "TBC"
-                        else f"[{x['Week']}] {x['Class']}\n(TBC)",
-                        axis=1,
-                    )
-                else:
-                    d_t["Cell"] = d_t.apply(
-                        lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
-                        if x["Space"] != "TBC"
-                        else f"{x['Class']}\n(TBC)",
-                        axis=1,
-                    )
-
-                days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-
-                # Aggregation: Combines Week A and Week B entries into one cell if they share the same slot
-                grid = d_t.pivot_table(
-                    index="Period",
-                    columns="Day",
-                    values="Cell",
-                    aggfunc=lambda x: " / ".join(sorted(x.unique())),
+                d_t["Cell"] = d_t.apply(
+                    lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
+                    if x["Space"] != "TBC"
+                    else f"{x['Class']}\n(TBC)",
+                    axis=1,
                 )
-                grid = grid.reindex(
-                    columns=[d for d in days_order if d in grid.columns]
-                ).sort_index()
+
+                # --- NEW: SPLIT VIEW LOGIC ---
+                if "Both" in sel_week_type:
+                    # Create a composite column key: "Monday (Week A)", "Monday (Week B)"
+                    # We strip "Week " to just "A" or "B" for neatness: "Monday (A)"
+                    d_t["Split_Col"] = (
+                        d_t["Day"] + " (" + d_t["Week"].str.replace("Week ", "") + ")"
+                    )
+
+                    grid = d_t.pivot_table(
+                        index="Period",
+                        columns="Split_Col",
+                        values="Cell",
+                        aggfunc=lambda x: " / ".join(sorted(x.unique())),
+                    )
+
+                    # Custom Sort Order: Mon (A), Mon (B), Tue (A), Tue (B)...
+                    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                    weeks = ["A", "B"]
+                    sorted_cols = [f"{d} ({w})" for d in days for w in weeks]
+
+                    # Only keep columns that actually exist in the data
+                    final_cols = [c for c in sorted_cols if c in grid.columns]
+                    grid = grid.reindex(columns=final_cols).sort_index()
+
+                else:
+                    # Standard View for Single Week
+                    days_order = [
+                        "Monday",
+                        "Tuesday",
+                        "Wednesday",
+                        "Thursday",
+                        "Friday",
+                    ]
+                    grid = d_t.pivot_table(
+                        index="Period",
+                        columns="Day",
+                        values="Cell",
+                        aggfunc=lambda x: " / ".join(sorted(x.unique())),
+                    )
+                    grid = grid.reindex(
+                        columns=[d for d in days_order if d in grid.columns]
+                    ).sort_index()
+
                 st.dataframe(
                     grid.style.map(style_grid), use_container_width=True, height=500
                 )
