@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import re
@@ -372,11 +373,10 @@ if df_timetable is not None and df_rules is not None:
                 desired = ["Period 1", "Period 2", "Period 3", "Period 4", "Period 5"]
                 mat = mat[[c for c in desired if c in mat.columns]]
 
-                st.subheader(f"🔥 Heatmap: Class Count ({w_sel})")
-                st.dataframe(
-                    mat.style.background_gradient(cmap="Oranges"),
-                    use_container_width=True,
-                )
+                st.subheader(f"🔥 Class Count ({w_sel})")
+
+                # FIXED: Removed .style.background_gradient to prevent matplotlib error
+                st.dataframe(mat, use_container_width=True)
             else:
                 st.info("No data generated yet.")
 
