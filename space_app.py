@@ -12,6 +12,7 @@ import xlsxwriter
 st.set_page_config(page_title="PE Space Master Pro", layout="wide", page_icon="🏆")
 
 # --- SIMPLE CREDENTIALS CONFIGURATION ---
+# Format: "username": "password"
 CREDENTIALS = {"admin": "admin123", "teacher": "pe2025"}
 
 
@@ -50,12 +51,14 @@ login_system()
 # 1. HELPER FUNCTIONS
 # ==========================================
 def clean_columns(df):
+    """Standardizes column names to Title Case and removes spaces."""
     if df is not None:
         df.columns = df.columns.astype(str).str.strip().str.title()
     return df
 
 
 def read_file(uploaded_file, header_row):
+    """Reads CSV or Excel files dynamically."""
     try:
         skip = header_row - 1
         if uploaded_file.name.endswith(".csv"):
@@ -69,8 +72,11 @@ def read_file(uploaded_file, header_row):
 
 
 def style_grid(val):
+    """Pandas Styler function for the timetable grid."""
     if isinstance(val, str) and val != "":
+        # Blue background for cells with classes
         return "background-color: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd;"
+    # Grey text for empty cells
     return "color: #e5e7eb;"
 
 
@@ -78,21 +84,29 @@ def style_grid(val):
 # 2. LOGIC ENGINE
 # ==========================================
 def check_space(class_code, date_obj, df_rules):
+    """
+    Allocates a space based on Class, Year, and Date (Seasonality).
+    Returns 'TBC' if no rule matches.
+    """
     rules = df_rules.to_dict("records")
     class_code = str(class_code).strip()
+
+    # Regex to separate Year (digits) from Class (letters), e.g., "7A" -> "7", "A"
     match = re.search(r"(\d+)\s*([A-Za-z]+)", class_code)
 
     if not match:
         return "TBC"
 
     year, cls_str = match.groups()
-    cls = cls_str.upper()[0]
+    cls = cls_str.upper()[0]  # Take first letter if multiple
     day_name = date_obj.strftime("%A")
 
     for rule in rules:
         try:
             r_start = pd.to_datetime(rule["Start"], dayfirst=True).date()
             r_end = pd.to_datetime(rule["End"], dayfirst=True).date()
+
+            # Match Logic: Year matches, Class matches, Day matches, Date is within range
             if (
                 str(rule["Year"]) == year
                 and str(rule["Class"]) == cls
@@ -111,8 +125,10 @@ def check_space(class_code, date_obj, df_rules):
 # Everything below this line only runs if the user is logged in
 st.title("🏆 PE Space Master Pro")
 
+# Initialize session state for results
 if "results_df" not in st.session_state:
     st.session_state.results_df = None
+
 df_timetable, df_rules = None, None
 
 # --- SIDEBAR ---
@@ -125,18 +141,20 @@ with st.sidebar:
     st.markdown("---")
     st.header("1. Upload Files")
     header_idx = st.number_input("Header Row:", min_value=1, value=1)
-    file_tt = st.file_uploader("Timetable", type=["csv", "xlsx"])
-    file_rules = st.file_uploader("Rules", type=["csv", "xlsx"])
+
+    file_tt = st.file_uploader("Timetable (CSV/Excel)", type=["csv", "xlsx"])
+    file_rules = st.file_uploader("Rules (CSV/Excel)", type=["csv", "xlsx"])
+
     if file_tt and file_rules:
         df_timetable = read_file(file_tt, header_idx)
         df_rules = read_file(file_rules, header_idx)
-        if df_timetable is not None:
-            st.success("Files Loaded")
+        if df_timetable is not None and df_rules is not None:
+            st.success("✅ Files Loaded Successfully")
 
     st.header("2. Settings")
-    start_date = st.date_input("Start", datetime(2025, 9, 5))
-    end_date = st.date_input("End", datetime(2025, 12, 19))
-    start_week = st.radio("Start Week", ["Week A", "Week B"])
+    start_date = st.date_input("Start Date", datetime(2025, 9, 5))
+    end_date = st.date_input("End Date", datetime(2025, 12, 19))
+    start_week = st.radio("Start Week Type", ["Week A", "Week B"])
 
 # --- MAIN APP LOGIC ---
 if df_timetable is not None and df_rules is not None:
@@ -155,40 +173,52 @@ if df_timetable is not None and df_rules is not None:
         st.error(f"❌ Rules Error: Missing columns {rules_missing}")
         st.stop()
 
+    # --- EXECUTION BUTTON ---
     if st.button("🚀 Run Allocation Engine", type="primary"):
         results = []
         try:
             current_date, week_toggle = start_date, 0 if start_week == "Week A" else 1
             days_count = (end_date - start_date).days + 1
-            bar = st.progress(0)
+
+            # Progress bar setup
+            progress_text = "Allocating spaces across dates..."
+            my_bar = st.progress(0, text=progress_text)
 
             for i in range(days_count):
                 curr = start_date + timedelta(days=i)
-                bar.progress((i + 1) / days_count)
+                my_bar.progress(
+                    (i + 1) / days_count, text=f"Processing {curr.strftime('%d-%b')}"
+                )
+
+                # Skip Weekends
                 if curr.weekday() < 5:
+                    # If Monday and not start date, flip the week
                     if curr.weekday() == 0 and curr != start_date:
                         week_toggle = 1 - week_toggle
-                    wk_label, day_label = (
-                        ("Week A" if week_toggle == 0 else "Week B"),
-                        curr.strftime("%A"),
-                    )
 
+                    wk_label = "Week A" if week_toggle == 0 else "Week B"
+                    day_label = curr.strftime("%A")
+
+                    # Filter Timetable for this specific Week/Day
                     daily = df_timetable[
                         (df_timetable["Week"].str.upper() == wk_label.upper())
                         & (df_timetable["Day"].str.upper() == day_label.upper())
                     ]
 
+                    # Process periods
                     for _, row in daily.iterrows():
-                        for p in range(1, 6):
+                        for p in range(1, 6):  # Assumes 5 periods
                             col = f"Period {p}"
                             if col in row and pd.notna(row[col]):
                                 cls = str(row[col]).strip()
-                                if len(cls) > 1:
+                                if len(cls) > 1:  # Ignore empty cells
+                                    # CALL THE LOGIC ENGINE
                                     space = check_space(
                                         cls,
                                         datetime.combine(curr, datetime.min.time()),
                                         df_rules,
                                     )
+
                                     results.append(
                                         {
                                             "Date": curr.strftime("%Y-%m-%d"),
@@ -202,14 +232,18 @@ if df_timetable is not None and df_rules is not None:
                                             ).strip(),
                                         }
                                     )
-            bar.empty()
+            my_bar.empty()
             st.session_state.results_df = pd.DataFrame(results) if results else None
+            if results:
+                st.success("🎉 Allocation Complete!")
         except Exception as e:
             st.error(f"Run Error: {e}")
 
     # --- RESULTS DASHBOARD ---
     if st.session_state.results_df is not None:
         df = st.session_state.results_df.copy()
+
+        # Get list of all known spaces from the Rules file for comparison
         master_spaces = sorted(
             [
                 s
@@ -220,6 +254,7 @@ if df_timetable is not None and df_rules is not None:
 
         st.markdown("---")
 
+        # Tabs for different views
         tab_teacher, tab_space, tab_analysis, tab_tools = st.tabs(
             ["👩‍🏫 Teacher View", "🏟️ Space Master", "📊 Analytics", "🛠️ Tools"]
         )
@@ -244,11 +279,13 @@ if df_timetable is not None and df_rules is not None:
             d_t = df[df["Staff"] == sel_teacher].copy()
             if sel_week != "Both":
                 d_t = d_t[d_t["Week"] == sel_week]
+
             st.markdown(f"### 📅 Schedule: **{sel_teacher}**")
 
             if view_type == "🗺️ Map (Grid)":
                 d_t["Info"] = d_t["Class"] + "\n(" + d_t["Space"] + ")"
                 days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
                 if sel_week == "Both":
                     col_a, col_b = st.columns(2)
                     with col_a:
@@ -288,6 +325,7 @@ if df_timetable is not None and df_rules is not None:
                         else:
                             st.write("No classes.")
                 else:
+                    # Single Week Grid
                     if not d_t.empty:
                         grid = d_t.pivot_table(
                             index="Period",
@@ -302,24 +340,28 @@ if df_timetable is not None and df_rules is not None:
                             grid.style.map(style_grid), use_container_width=True
                         )
                     else:
-                        st.warning("No classes.")
+                        st.warning("No classes found for this selection.")
             else:
+                # List View
                 st.dataframe(d_t, use_container_width=True)
 
+            # Excel Download
             b = io.BytesIO()
             with pd.ExcelWriter(b, engine="xlsxwriter") as w:
                 d_t.to_excel(w, index=False)
             st.download_button(
-                f"📥 Download {sel_teacher}",
+                f"📥 Download {sel_teacher} Schedule",
                 b.getvalue(),
                 f"{sel_teacher}_Schedule.xlsx",
             )
 
         # ================= TAB 2: SPACE MASTER =================
         with tab_space:
-            w_sel = st.selectbox("Select Week", ["Week A", "Week B"])
+            w_sel = st.selectbox("Select Week Scope", ["Week A", "Week B"])
             df_heat = df[df["Week"] == w_sel]
+
             if not df_heat.empty:
+                # Create a Matrix of Space vs Period
                 mat = (
                     df_heat.pivot_table(
                         index="Space", columns="Period", values="Class", aggfunc="count"
@@ -329,31 +371,39 @@ if df_timetable is not None and df_rules is not None:
                 )
                 desired = ["Period 1", "Period 2", "Period 3", "Period 4", "Period 5"]
                 mat = mat[[c for c in desired if c in mat.columns]]
-                st.dataframe(mat, use_container_width=True)
+
+                st.subheader(f"🔥 Heatmap: Class Count ({w_sel})")
+                st.dataframe(
+                    mat.style.background_gradient(cmap="Oranges"),
+                    use_container_width=True,
+                )
             else:
-                st.info("No data")
+                st.info("No data generated yet.")
 
         # ================= TAB 3: ANALYTICS =================
         with tab_analysis:
             col_an_1, col_an_2 = st.columns(2)
+
             with col_an_1:
                 st.markdown("### 🏟️ Space Utilization %")
                 space_counts = df["Space"].value_counts().reset_index()
                 space_counts.columns = ["Space", "Total Allocations"]
                 total_curriculum_slots = space_counts["Total Allocations"].sum()
-                space_counts["% Share"] = (
-                    space_counts["Total Allocations"] / total_curriculum_slots
-                )
-                st.dataframe(
-                    space_counts.style.format({"% Share": "{:.1%}"}).bar(
-                        subset=["% Share"], color="#3b82f6"
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+
+                if total_curriculum_slots > 0:
+                    space_counts["% Share"] = (
+                        space_counts["Total Allocations"] / total_curriculum_slots
+                    )
+                    st.dataframe(
+                        space_counts.style.format({"% Share": "{:.1%}"}).bar(
+                            subset=["% Share"], color="#3b82f6"
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
             with col_an_2:
-                st.markdown("### 👥 Teacher Workload")
+                st.markdown("### 👥 Teacher Workload (Class Count)")
                 staff_counts = df["Staff"].value_counts().reset_index()
                 staff_counts.columns = ["Teacher", "Classes"]
                 st.dataframe(
@@ -487,7 +537,7 @@ if df_timetable is not None and df_rules is not None:
                         else:
                             actual_week_type = day_data.iloc[0]["Week"]
                             st.info(
-                                f"Checking **{f_date_str}** ({actual_week_type})..."
+                                f"Checking availability for **{f_date_str}** ({actual_week_type})..."
                             )
 
                             # Find used spaces
@@ -496,6 +546,7 @@ if df_timetable is not None and df_rules is not None:
                                 .unique()
                                 .tolist()
                             )
+                            # Find free spaces
                             free_spaces = sorted(
                                 list(set(master_spaces) - set(used_spaces))
                             )
@@ -503,7 +554,9 @@ if df_timetable is not None and df_rules is not None:
                             if free_spaces:
                                 st.success(f"✅ {len(free_spaces)} Spaces Available:")
                                 st.dataframe(
-                                    pd.DataFrame(free_spaces, columns=["Free Spaces"]),
+                                    pd.DataFrame(
+                                        free_spaces, columns=["Available Spaces"]
+                                    ),
                                     use_container_width=True,
                                 )
                             else:
@@ -511,22 +564,26 @@ if df_timetable is not None and df_rules is not None:
 
             # TOOL B: CONFLICT REPORT
             with t2:
-                st.info("List of all double bookings (2+ classes in one space).")
+                st.info("Detects double bookings (2+ classes assigned to one space).")
+                # Group by key columns to find duplicates
                 duplicates = df[
                     df.duplicated(subset=["Week", "Day", "Period", "Space"], keep=False)
                 ]
-                duplicates = duplicates[duplicates["Space"] != "TBC"]
+                # Filter out TBC/Empty spaces as they don't count as conflicts
+                duplicates = duplicates[
+                    (duplicates["Space"] != "TBC") & (duplicates["Space"] != "nan")
+                ]
+
                 if not duplicates.empty:
-                    st.error(f"Found {len(duplicates)} Conflicts!")
+                    st.error(f"⚠️ Found {len(duplicates)} Conflicts!")
                     duplicates = duplicates.sort_values(
                         by=["Week", "Day", "Period", "Space"]
                     )
                     st.dataframe(
-                        duplicates[
-                            ["Week", "Day", "Period", "Space", "Class", "Staff"]
-                        ],
+                        duplicates[["Date", "Period", "Space", "Class", "Staff"]],
                         use_container_width=True,
                     )
+
                     b2 = io.BytesIO()
                     with pd.ExcelWriter(b2, engine="xlsxwriter") as w:
                         duplicates.to_excel(w, index=False)
@@ -534,7 +591,7 @@ if df_timetable is not None and df_rules is not None:
                         "📥 Download Conflict Report", b2.getvalue(), "Conflicts.xlsx"
                     )
                 else:
-                    st.success("✅ No conflicts detected!")
+                    st.success("✅ No conflicts detected! Great job.")
 
 else:
-    st.info("👈 Please upload your files to begin.")
+    st.info("👈 Please upload your Timetable and Rules files in the Sidebar to begin.")
