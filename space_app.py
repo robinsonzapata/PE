@@ -31,6 +31,8 @@ DEFAULT_FACILITIES = {
     "Theory": "Classroom 1",
     "Dance": "Studio",
     "Table Tennis": "Gym",
+    "Pe": "Field",  # Fallback for generic PE
+    "Gcse Pe": "Classroom 1",  # Fallback for GCSE
 }
 
 
@@ -61,8 +63,20 @@ login_system()
 # ==========================================
 def clean_columns(df):
     if df is not None:
+        # Standardize headers to Title Case (e.g. "sport" -> "Sport")
         df.columns = df.columns.astype(str).str.strip().str.title()
     return df
+
+
+def clean_year_column(val):
+    """Forces years like 7.0, '7 ', or 7 to become strictly '7'"""
+    if pd.isna(val):
+        return ""
+    val_str = str(val).strip()
+    # Remove decimal .0 if it exists (Excel artifact)
+    if val_str.endswith(".0"):
+        return val_str[:-2]
+    return val_str
 
 
 def read_file(uploaded_file, header_row):
@@ -74,9 +88,17 @@ def read_file(uploaded_file, header_row):
             df = pd.read_excel(uploaded_file, header=skip, engine="openpyxl")
 
         df = clean_columns(df)
-        for c in ["Year", "Class", "Day", "Sport", "Activity"]:
+
+        # --- ROBUST DATA CLEANING ---
+        # 1. Clean Year Column specifically to fix the "7.0 != 7" bug
+        if "Year" in df.columns:
+            df["Year"] = df["Year"].apply(clean_year_column)
+
+        # 2. Clean other text columns
+        for c in ["Class", "Day", "Sport", "Activity"]:
             if c in df.columns:
                 df[c] = df[c].astype(str).str.strip()
+
         return df
     except Exception as e:
         st.error(f"Read Error: {e}")
@@ -99,26 +121,31 @@ def style_grid(val):
 # ==========================================
 # 2. LOGIC ENGINE
 # ==========================================
-def get_space_for_class(class_code, date_obj, df_curriculum, facility_map):
+def get_space_for_class(class_code, date_obj, curriculum_records, facility_map):
     """
     Returns: (Assigned Space, Sport Found, Debug Reason)
     """
-    curriculum = df_curriculum.to_dict("records")
     class_code = str(class_code).strip()
 
+    # Regex: Finds Year (digits) and Class (letters)
+    # Handles: "11a PE2", "9Peace", "7B", "11 GCSE"
     match = re.search(
         r"^(?:Y|Year)?\s*(\d+)\s*([A-Za-z0-9]+)", class_code, re.IGNORECASE
     )
+
     if not match:
-        return "TBC", "Unknown", "Invalid Class Format"
+        return "TBC", "None", "Invalid Class Format"
 
     year, cls_str = match.groups()
-    specific_cls = cls_str.upper()[0]
+    specific_cls = cls_str.upper()[0]  # First letter (e.g., 'P' from Peace)
     day_name = date_obj.strftime("%A")
 
     # 1. FIND SPORT IN CURRICULUM
     found_sport = None
-    for row in curriculum:
+    rule_matched_type = None
+
+    for row in curriculum_records:
+        # Date Check
         try:
             r_start = pd.to_datetime(row["Start"], dayfirst=True).date()
             r_end = pd.to_datetime(row["End"], dayfirst=True).date()
@@ -127,25 +154,36 @@ def get_space_for_class(class_code, date_obj, df_curriculum, facility_map):
         except:
             continue
 
+        # Year Check (Robust string comparison)
         if str(row["Year"]) != year:
             continue
+
+        # Day Check
         if "Day" in row and str(row["Day"]).title() not in [day_name, "All"]:
             continue
 
         r_class = str(row["Class"]).upper()
-        # Priority: Exact -> Letter -> All
+
+        # Priority Logic:
+        # 1. Exact Match (e.g. Class "B" matches Rule "B")
         if r_class == cls_str.upper():
             found_sport = row.get("Sport", row.get("Activity"))
-            break
-        elif r_class == specific_cls:
+            rule_matched_type = "Exact"
+            break  # Stop looking, we found the best match
+
+        # 2. First Letter Match (e.g. Class "Peace" matches Rule "P")
+        elif r_class == specific_cls and rule_matched_type != "Exact":
             found_sport = row.get("Sport", row.get("Activity"))
-            break
-        elif r_class == "ALL":
-            if not found_sport:
-                found_sport = row.get("Sport", row.get("Activity"))
+            rule_matched_type = "Letter"
+            # Don't break yet, in case there is an Exact match later in the file
+
+        # 3. "All" Match (e.g. Rule "All")
+        elif r_class == "ALL" and not found_sport:
+            found_sport = row.get("Sport", row.get("Activity"))
+            rule_matched_type = "All"
 
     if not found_sport:
-        return "TBC", "None", f"No Curriculum Rule for Y{year}"
+        return "TBC", "None", f"No Rule found for Y{year}"
 
     # 2. FIND SPACE IN FACILITY MAP
     found_sport_clean = str(found_sport).title().strip()
@@ -238,6 +276,10 @@ if run_btn:
                 st.error("❌ Curriculum File needs a 'Sport' or 'Activity' column.")
             else:
                 results = []
+
+                # Pre-convert curriculum to list of dicts ONCE for speed
+                curriculum_records = df_curr.to_dict("records")
+
                 # 2-Week Logic
                 dates_to_run = []
                 d = start_date
@@ -253,6 +295,7 @@ if run_btn:
                     day_name = curr_date.strftime("%A")
                     date_str = curr_date.strftime("%Y-%m-%d")
 
+                    # Filter Timetable for this day
                     daily_tt = df_tt[
                         (df_tt["Week"].str.upper() == week_type.upper())
                         & (df_tt["Day"].str.upper() == day_name.upper())
@@ -263,14 +306,16 @@ if run_btn:
                             col = f"Period {p}"
                             if col in row and pd.notna(row[col]):
                                 cls = str(row[col]).strip()
+                                # Ignore small invalid entries or breaks
                                 if len(cls) > 1 and cls.lower() not in [
                                     "lunch",
                                     "free",
                                     "break",
+                                    "nan",
                                 ]:
                                     # GET SPACE + DEBUG REASON
                                     space, sport, reason = get_space_for_class(
-                                        cls, curr_date, df_curr, FACILITY_MAP
+                                        cls, curr_date, curriculum_records, FACILITY_MAP
                                     )
 
                                     results.append(
@@ -282,7 +327,7 @@ if run_btn:
                                             "Class": cls,
                                             "Activity": sport,
                                             "Space": space,
-                                            "Reason": reason,  # Saving the reason
+                                            "Reason": reason,
                                             "Staff": str(
                                                 row.get("Staff", "Unknown")
                                             ).strip(),
@@ -328,7 +373,6 @@ if st.session_state.results_df is not None:
 
         if view_type == "🗺️ Grid View":
             if not d_t.empty:
-                # SAFE STRING CREATION
                 d_t["Cell"] = d_t.apply(
                     lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
                     if x["Space"] != "TBC"
@@ -336,7 +380,6 @@ if st.session_state.results_df is not None:
                     axis=1,
                 )
                 days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-                # SAFE AGGREGATION TO PREVENT "TBCTBCTBC"
                 grid = d_t.pivot_table(
                     index="Period",
                     columns="Day",
@@ -350,7 +393,7 @@ if st.session_state.results_df is not None:
                     grid.style.map(style_grid), use_container_width=True, height=500
                 )
             else:
-                st.info("No classes.")
+                st.info("No classes found for this teacher in this week.")
         else:
             st.dataframe(d_t, use_container_width=True)
 
@@ -379,7 +422,7 @@ if st.session_state.results_df is not None:
             st.subheader(f"🔥 Space Utilization ({w_sel})")
             st.dataframe(mat, use_container_width=True)
 
-    # === TAB 3: TBC ISSUES (NEW) ===
+    # === TAB 3: TBC ISSUES ===
     with tab_issues:
         st.subheader("🚨 Why are classes TBC?")
         tbc_df = df[df["Space"] == "TBC"]
@@ -387,15 +430,19 @@ if st.session_state.results_df is not None:
         if not tbc_df.empty:
             st.error(f"Found {len(tbc_df)} unallocated classes.")
 
-            # Show summary of reasons
-            reasons = tbc_df["Reason"].value_counts().reset_index()
-            reasons.columns = ["Reason for Error", "Count"]
-            st.dataframe(reasons, use_container_width=True)
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                st.markdown("**Summary of Errors**")
+                reasons = tbc_df["Reason"].value_counts().reset_index()
+                reasons.columns = ["Reason for Error", "Count"]
+                st.dataframe(reasons, use_container_width=True)
 
-            st.markdown("#### Detailed List")
-            st.dataframe(
-                tbc_df[["Week", "Day", "Period", "Class", "Activity", "Reason"]]
-            )
+            with c2:
+                st.markdown("**Detailed List**")
+                st.dataframe(
+                    tbc_df[["Week", "Day", "Period", "Class", "Activity", "Reason"]],
+                    use_container_width=True,
+                )
         else:
             st.success("✅ Perfection! All classes have been allocated a space.")
 
