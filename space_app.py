@@ -219,24 +219,19 @@ if "run_complete" not in st.session_state:
 with st.sidebar:
     st.header("🎮 Controls")
 
-    st.markdown("### 1. Scope (Which Weeks?)")
+    st.markdown("### 1. Scope")
     run_scope = st.radio(
-        "Generate:",
-        ["Both Weeks (A & B)", "Week A Only", "Week B Only"],
-        help="Select 'Both Weeks' to see the full cycle.",
+        "Generate:", ["Both Weeks (A & B)", "Week A Only", "Week B Only"]
     )
 
     st.markdown("### 2. Timeline")
     start_date = st.date_input("Start Date (Monday)", date(2025, 9, 1))
 
-    # Logic: If 'Both Weeks' is selected, we usually want at least 2 weeks.
-    # If custom duration is needed (e.g. whole term), user can slide.
-
     duration_mode = st.checkbox("Generate Full Term (Multi-week)", value=False)
     if duration_mode:
         num_weeks = st.slider("Weeks to Generate", 2, 12, 8)
     else:
-        num_weeks = 2  # Default cycle
+        num_weeks = 2
 
     debug_mode = st.checkbox("🐞 Debug Mode", value=False)
 
@@ -294,7 +289,6 @@ if run_btn:
             dates_to_run = []
             d = start_date
 
-            # 1. GENERATE DATES
             total_days_needed = num_weeks * 5
             while len(dates_to_run) < total_days_needed:
                 if d.weekday() < 5:
@@ -303,21 +297,16 @@ if run_btn:
 
             progress_bar = st.progress(0, text="Allocating Sports...")
 
-            # 2. ITERATE
             for i, curr_date in enumerate(dates_to_run):
-                # --- WEEK A/B CALCULATION ---
-                # Logic: Week flips every 5 school days
                 current_week_idx = i // 5
+                # Assuming Start Date starts the cycle as Week A
                 is_even_week = current_week_idx % 2 == 0
-                # Assuming Start Date is Week A.
-                # If Start Date is Week B, swap this logic.
                 week_type_calc = "Week A" if is_even_week else "Week B"
 
-                # --- FILTER BY SCOPE ---
                 if run_scope == "Week A Only" and week_type_calc == "Week B":
-                    continue  # Skip this day
+                    continue
                 if run_scope == "Week B Only" and week_type_calc == "Week A":
-                    continue  # Skip this day
+                    continue
 
                 day_name = curr_date.strftime("%A")
                 date_str = curr_date.strftime("%Y-%m-%d")
@@ -338,7 +327,6 @@ if run_btn:
                                 "break",
                                 "nan",
                             ]:
-                                # --- TERM ROTATION LOOKUP ---
                                 space, sport, reason = get_space_for_class(
                                     cls,
                                     curr_date,
@@ -382,34 +370,25 @@ if st.session_state.results_df is not None:
         ["👩‍🏫 Teacher View", "🏟️ Space Master", "⚠️ TBC Issues", "🛠️ Tools"]
     )
 
-    # === TAB 1: TEACHER VIEW ===
+    # === TAB 1: TEACHER VIEW (SIMPLIFIED) ===
     with tab_teacher:
         c1, c2, c3 = st.columns([1, 1, 2])
         with c1:
             all_staff = sorted(df["Staff"].unique().tolist())
             sel_teacher = st.selectbox("Select Teacher:", all_staff)
         with c2:
-            # Smart Week Selector
-            df["Week_Label"] = (
-                df["Date"].apply(lambda x: pd.to_datetime(x).strftime("%b %d"))
-                + " ("
-                + df["Week"]
-                + ")"
+            # SIMPLE TOGGLE: A or B (No more Dates!)
+            sel_week_type = st.radio(
+                "Select Week:", ["Week A", "Week B"], horizontal=True
             )
-            available_weeks = sorted(df["Week_Label"].unique().tolist())
-
-            if len(available_weeks) > 1:
-                sel_week_label = st.selectbox("Select Week Scope:", available_weeks)
-                d_t = df[
-                    (df["Staff"] == sel_teacher) & (df["Week_Label"] == sel_week_label)
-                ].copy()
-            else:
-                d_t = df[df["Staff"] == sel_teacher].copy()
 
         with c3:
             view_type = st.radio(
                 "View Mode:", ["🗺️ Grid View", "📄 List View"], horizontal=True
             )
+
+        # Filter by Staff AND Week Type
+        d_t = df[(df["Staff"] == sel_teacher) & (df["Week"] == sel_week_type)].copy()
 
         if view_type == "🗺️ Grid View":
             if not d_t.empty:
@@ -420,11 +399,13 @@ if st.session_state.results_df is not None:
                     axis=1,
                 )
                 days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+                # SAFE AGGREGATION: Combines identical entries into one clean cell
                 grid = d_t.pivot_table(
                     index="Period",
                     columns="Day",
                     values="Cell",
-                    aggfunc=lambda x: " / ".join(x.unique()),
+                    aggfunc=lambda x: " / ".join(sorted(x.unique())),
                 )
                 grid = grid.reindex(
                     columns=[d for d in days_order if d in grid.columns]
@@ -433,15 +414,18 @@ if st.session_state.results_df is not None:
                     grid.style.map(style_grid), use_container_width=True, height=500
                 )
             else:
-                st.info("No classes found.")
+                st.info(f"No classes for {sel_teacher} in {sel_week_type}.")
         else:
             st.dataframe(d_t, use_container_width=True)
 
+        # Download (Full Term)
         b = io.BytesIO()
         with pd.ExcelWriter(b, engine="xlsxwriter") as w:
-            d_t.to_excel(w, index=False)
+            df[df["Staff"] == sel_teacher].to_excel(w, index=False)
         st.download_button(
-            "📥 Download Schedule", b.getvalue(), f"{sel_teacher}_Schedule.xlsx"
+            "📥 Download Full Schedule (Excel)",
+            b.getvalue(),
+            f"{sel_teacher}_Schedule.xlsx",
         )
 
     # === TAB 3: TBC ISSUES ===
