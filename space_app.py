@@ -378,94 +378,85 @@ if st.session_state.results_df is not None:
         with c2:
             sel_week_type = st.radio(
                 "Select View:",
-                ["Both Weeks (Full Cycle)", "Week A", "Week B"],
+                ["Both Weeks (Stacked)", "Week A", "Week B"],
                 horizontal=True,
                 index=0,
             )
-
         with c3:
             view_type = st.radio(
                 "View Mode:", ["🗺️ Grid View", "📄 List View"], horizontal=True
             )
 
-        # Filtering
-        if "Both" in sel_week_type:
-            d_t = df[df["Staff"] == sel_teacher].copy()
-        else:
-            d_t = df[
-                (df["Staff"] == sel_teacher) & (df["Week"] == sel_week_type)
-            ].copy()
+        # HELPER TO DRAW A GRID
+        def draw_week_grid(dataframe, title):
+            if dataframe.empty:
+                return
 
+            dataframe = dataframe.copy()  # Safe copy
+            dataframe["Cell"] = dataframe.apply(
+                lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
+                if x["Space"] != "TBC"
+                else f"{x['Class']}\n(TBC)",
+                axis=1,
+            )
+
+            days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+            grid = dataframe.pivot_table(
+                index="Period",
+                columns="Day",
+                values="Cell",
+                aggfunc=lambda x: " / ".join(sorted(x.unique())),
+            )
+            grid = grid.reindex(
+                columns=[d for d in days_order if d in grid.columns]
+            ).sort_index()
+
+            st.markdown(f"#### {title}")
+            st.dataframe(
+                grid.style.map(style_grid), use_container_width=True, height=None
+            )
+
+        # MAIN VIEW LOGIC
         if view_type == "🗺️ Grid View":
-            if not d_t.empty:
-                d_t["Cell"] = d_t.apply(
-                    lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
-                    if x["Space"] != "TBC"
-                    else f"{x['Class']}\n(TBC)",
-                    axis=1,
-                )
+            if "Both" in sel_week_type:
+                # STACKED VIEW
+                df_a = df[(df["Staff"] == sel_teacher) & (df["Week"] == "Week A")]
+                df_b = df[(df["Staff"] == sel_teacher) & (df["Week"] == "Week B")]
 
-                # --- NEW LOGIC: 10-Day Panoramic View ---
-                if "Both" in sel_week_type:
-                    # Clean Week Key: "A" or "B"
-                    d_t["Week_Short"] = d_t["Week"].str.replace("Week ", "")
-                    # Create Column: "Monday (A)"
-                    d_t["Split_Col"] = d_t["Day"] + " (" + d_t["Week_Short"] + ")"
-
-                    grid = d_t.pivot_table(
-                        index="Period",
-                        columns="Split_Col",
-                        values="Cell",
-                        aggfunc=lambda x: " / ".join(sorted(x.unique())),
-                    )
-
-                    # Force Specific Order: Mon A -> Fri A -> Mon B -> Fri B
-                    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-                    ordered_cols = []
-
-                    # Add Week A columns first
-                    for d in days:
-                        ordered_cols.append(f"{d} (A)")
-                    # Add Week B columns next
-                    for d in days:
-                        ordered_cols.append(f"{d} (B)")
-
-                    # Filter to columns that actually exist
-                    final_cols = [c for c in ordered_cols if c in grid.columns]
-                    grid = grid.reindex(columns=final_cols).sort_index()
-
+                if df_a.empty and df_b.empty:
+                    st.info("No classes found.")
                 else:
-                    # Single Week View
-                    days_order = [
-                        "Monday",
-                        "Tuesday",
-                        "Wednesday",
-                        "Thursday",
-                        "Friday",
-                    ]
-                    grid = d_t.pivot_table(
-                        index="Period",
-                        columns="Day",
-                        values="Cell",
-                        aggfunc=lambda x: " / ".join(sorted(x.unique())),
-                    )
-                    grid = grid.reindex(
-                        columns=[d for d in days_order if d in grid.columns]
-                    ).sort_index()
+                    if not df_a.empty:
+                        draw_week_grid(df_a, "📅 Week A")
+                    if not df_a.empty and not df_b.empty:
+                        st.markdown("---")  # Separator
+                    if not df_b.empty:
+                        draw_week_grid(df_b, "📅 Week B")
 
-                st.dataframe(
-                    grid.style.map(style_grid), use_container_width=True, height=500
-                )
             else:
-                st.info(f"No classes found for {sel_teacher}.")
+                # SINGLE WEEK VIEW
+                d_t = df[(df["Staff"] == sel_teacher) & (df["Week"] == sel_week_type)]
+                if d_t.empty:
+                    st.info(f"No classes for {sel_week_type}.")
+                else:
+                    draw_week_grid(d_t, f"📅 {sel_week_type}")
+
         else:
+            # LIST VIEW
+            if "Both" in sel_week_type:
+                d_t = df[df["Staff"] == sel_teacher]
+            else:
+                d_t = df[(df["Staff"] == sel_teacher) & (df["Week"] == sel_week_type)]
             st.dataframe(d_t, use_container_width=True)
 
+        # DOWNLOAD
         b = io.BytesIO()
         with pd.ExcelWriter(b, engine="xlsxwriter") as w:
-            d_t.to_excel(w, index=False)
+            df[df["Staff"] == sel_teacher].to_excel(w, index=False)
         st.download_button(
-            "📥 Download Schedule", b.getvalue(), f"{sel_teacher}_Schedule.xlsx"
+            "📥 Download Full Schedule (Excel)",
+            b.getvalue(),
+            f"{sel_teacher}_Schedule.xlsx",
         )
 
     # === TAB 3: TBC ISSUES ===
