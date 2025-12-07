@@ -299,7 +299,6 @@ if run_btn:
 
             for i, curr_date in enumerate(dates_to_run):
                 current_week_idx = i // 5
-                # Assuming Start Date starts the cycle as Week A
                 is_even_week = current_week_idx % 2 == 0
                 week_type_calc = "Week A" if is_even_week else "Week B"
 
@@ -370,16 +369,16 @@ if st.session_state.results_df is not None:
         ["👩‍🏫 Teacher View", "🏟️ Space Master", "⚠️ TBC Issues", "🛠️ Tools"]
     )
 
-    # === TAB 1: TEACHER VIEW (SIMPLIFIED) ===
+    # === TAB 1: TEACHER VIEW ===
     with tab_teacher:
         c1, c2, c3 = st.columns([1, 1, 2])
         with c1:
             all_staff = sorted(df["Staff"].unique().tolist())
             sel_teacher = st.selectbox("Select Teacher:", all_staff)
         with c2:
-            # SIMPLE TOGGLE: A or B (No more Dates!)
+            # === UPDATED: Added 'Both' Option ===
             sel_week_type = st.radio(
-                "Select Week:", ["Week A", "Week B"], horizontal=True
+                "Select Week:", ["Week A", "Week B", "Both"], horizontal=True
             )
 
         with c3:
@@ -387,20 +386,35 @@ if st.session_state.results_df is not None:
                 "View Mode:", ["🗺️ Grid View", "📄 List View"], horizontal=True
             )
 
-        # Filter by Staff AND Week Type
-        d_t = df[(df["Staff"] == sel_teacher) & (df["Week"] == sel_week_type)].copy()
+        # Filter Logic
+        if sel_week_type == "Both":
+            d_t = df[df["Staff"] == sel_teacher].copy()
+        else:
+            d_t = df[
+                (df["Staff"] == sel_teacher) & (df["Week"] == sel_week_type)
+            ].copy()
 
         if view_type == "🗺️ Grid View":
             if not d_t.empty:
-                d_t["Cell"] = d_t.apply(
-                    lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
-                    if x["Space"] != "TBC"
-                    else f"{x['Class']}\n(TBC)",
-                    axis=1,
-                )
+                # Add Week label to cell text ONLY if "Both" is selected to avoid confusion
+                if sel_week_type == "Both":
+                    d_t["Cell"] = d_t.apply(
+                        lambda x: f"[{x['Week']}] {x['Class']}\n{x['Activity']}\n({x['Space']})"
+                        if x["Space"] != "TBC"
+                        else f"[{x['Week']}] {x['Class']}\n(TBC)",
+                        axis=1,
+                    )
+                else:
+                    d_t["Cell"] = d_t.apply(
+                        lambda x: f"{x['Class']}\n{x['Activity']}\n({x['Space']})"
+                        if x["Space"] != "TBC"
+                        else f"{x['Class']}\n(TBC)",
+                        axis=1,
+                    )
+
                 days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
-                # SAFE AGGREGATION: Combines identical entries into one clean cell
+                # Aggregation: Combines Week A and Week B entries into one cell if they share the same slot
                 grid = d_t.pivot_table(
                     index="Period",
                     columns="Day",
@@ -414,18 +428,15 @@ if st.session_state.results_df is not None:
                     grid.style.map(style_grid), use_container_width=True, height=500
                 )
             else:
-                st.info(f"No classes for {sel_teacher} in {sel_week_type}.")
+                st.info(f"No classes found for {sel_teacher}.")
         else:
             st.dataframe(d_t, use_container_width=True)
 
-        # Download (Full Term)
         b = io.BytesIO()
         with pd.ExcelWriter(b, engine="xlsxwriter") as w:
-            df[df["Staff"] == sel_teacher].to_excel(w, index=False)
+            d_t.to_excel(w, index=False)
         st.download_button(
-            "📥 Download Full Schedule (Excel)",
-            b.getvalue(),
-            f"{sel_teacher}_Schedule.xlsx",
+            "📥 Download Schedule", b.getvalue(), f"{sel_teacher}_Schedule.xlsx"
         )
 
     # === TAB 3: TBC ISSUES ===
